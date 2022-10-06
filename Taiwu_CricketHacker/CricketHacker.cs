@@ -1,6 +1,7 @@
 ﻿using Config;
 using FrameWork.ModSystem;
 using HarmonyLib;
+using System;
 using TaiwuModdingLib.Core.Plugin;
 using UnityEngine;
 
@@ -11,6 +12,8 @@ namespace Taiwu_CricketHacker
     {
         //启用开关
         public static bool EnableFlag;
+        //必捉开关
+        public static bool SetSingFlag;
         //Harmony
         Harmony harmony;
 
@@ -28,6 +31,7 @@ namespace Taiwu_CricketHacker
         public override void OnModSettingUpdate()
         {
             ModManager.GetSetting(ModIdStr, "EnableFlag", val: ref EnableFlag);
+            ModManager.GetSetting(ModIdStr, "SetSingFlag", val: ref SetSingFlag);
         }
 
         [HarmonyPostfix, HarmonyPatch(typeof(UI_CatchCricket), "InitCatchPlace")]
@@ -92,6 +96,19 @@ namespace Taiwu_CricketHacker
                     }
                 }
             }
+        }
+
+        [HarmonyPrefix, HarmonyPatch(typeof(UI_CatchCricket), "OnClickCatchPlace", new Type[] { typeof(int) }) ]
+        public static void OnClickCatchPlace_PrePatch(int index)
+        {
+            if (!SetSingFlag)
+            {
+                return;
+            }
+            UI_CatchCricket uiCricket = UIElement.CatchCricket.UiBaseAs<UI_CatchCricket>();
+            Traverse trv = Traverse.Create(uiCricket);
+            UI_CatchCricket.CricketPlaceInfo[] placeList = trv.Field("_catchPlaceList").GetValue<UI_CatchCricket.CricketPlaceInfo[]>();
+            placeList[index].SingLevel = 1000;
         }
     }
 }
