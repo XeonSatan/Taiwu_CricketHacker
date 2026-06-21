@@ -33,10 +33,11 @@ namespace Taiwu_CricketHacker
         private const short ForceCatchSingLevel = 1000;
         private static readonly Vector3 CricketLabelLocalPosition = new Vector3(100f, -100f, 0f);
         private static readonly Vector2 CricketLabelSize = new Vector2(260f, 80f);
-        private const bool DebugLogging = true;
+        private const bool DebugLogging = false;
         private const int MaxVerboseLogCount = 20;
 
         public static bool EnableFlag = true;
+        public static bool EnableCatchCricketFlag = true;
         public static bool SetSingFlag;
         public static bool EnableCombatFlag = true;
 
@@ -74,7 +75,7 @@ namespace Taiwu_CricketHacker
             PatchCatchCricket();
             PatchCombatVisibility();
             PatchBettingRewards();
-            Log("Initialize end. Defaults: EnableFlag=" + EnableFlag + ", SetSingFlag=" + SetSingFlag + ", EnableCombatFlag=" + EnableCombatFlag);
+            Log("Initialize end. Defaults: EnableFlag=" + EnableFlag + ", EnableCatchCricketFlag=" + EnableCatchCricketFlag + ", SetSingFlag=" + SetSingFlag + ", EnableCombatFlag=" + EnableCombatFlag);
         }
 
         // 注册抓蛐蛐界面的补丁，包括生成透视标签和可选的强制捕捉。
@@ -142,11 +143,21 @@ namespace Taiwu_CricketHacker
         // 读取 MOD 设置界面的开关状态，同步到运行时静态开关。
         public override void OnModSettingUpdate()
         {
-            Log("OnModSettingUpdate before: EnableFlag=" + EnableFlag + ", SetSingFlag=" + SetSingFlag + ", EnableCombatFlag=" + EnableCombatFlag);
+            Log("OnModSettingUpdate before: EnableFlag=" + EnableFlag + ", EnableCatchCricketFlag=" + EnableCatchCricketFlag + ", SetSingFlag=" + SetSingFlag + ", EnableCombatFlag=" + EnableCombatFlag);
             ModManager.GetSetting(ModIdStr, "EnableFlag", val: ref EnableFlag);
+            ModManager.GetSetting(ModIdStr, "EnableCatchCricketFlag", val: ref EnableCatchCricketFlag);
             ModManager.GetSetting(ModIdStr, "SetSingFlag", val: ref SetSingFlag);
             ModManager.GetSetting(ModIdStr, "EnableCombatFlag", val: ref EnableCombatFlag);
-            Log("OnModSettingUpdate after: ModId=" + ModIdStr + ", EnableFlag=" + EnableFlag + ", SetSingFlag=" + SetSingFlag + ", EnableCombatFlag=" + EnableCombatFlag);
+            Log("OnModSettingUpdate after: ModId=" + ModIdStr + ", EnableFlag=" + EnableFlag + ", EnableCatchCricketFlag=" + EnableCatchCricketFlag + ", SetSingFlag=" + SetSingFlag + ", EnableCombatFlag=" + EnableCombatFlag);
+
+            if (!IsCatchCricketRevealEnabled())
+            {
+                Clean();
+            }
+            else if (_lastCatchCricketView != null)
+            {
+                RefreshCatchCricketLabels(_lastCatchCricketView);
+            }
         }
 
         // 抓蛐蛐地点初始化后，为每个捕捉点创建或刷新显示蛐蛐名称的透视标签。
@@ -155,7 +166,7 @@ namespace Taiwu_CricketHacker
             try
             {
                 _catchPatchHitCount++;
-                LogVerbose(ref _catchPatchHitCount, "InitCatchPlace_PostPatch hit. instanceNull=" + (__instance == null) + ", EnableFlag=" + EnableFlag);
+                LogVerbose(ref _catchPatchHitCount, "InitCatchPlace_PostPatch hit. instanceNull=" + (__instance == null) + ", EnableFlag=" + EnableFlag + ", EnableCatchCricketFlag=" + EnableCatchCricketFlag);
                 if (__instance == null)
                 {
                     return;
@@ -163,69 +174,84 @@ namespace Taiwu_CricketHacker
 
                 _lastCatchCricketView = __instance;
 
-                if (!EnableFlag)
+                if (!IsCatchCricketRevealEnabled())
                 {
-                    LogVerbose(ref _catchPatchHitCount, "InitCatchPlace_PostPatch skipped because EnableFlag=false.");
+                    LogVerbose(ref _catchPatchHitCount, "InitCatchPlace_PostPatch skipped because catch cricket reveal is disabled.");
                     Clean(__instance);
                     return;
                 }
 
-                ViewCatchCricket.CricketPlaceInfo[] placeList = GetCatchPlaceList(__instance);
-                RectTransform rootRT = GetCatchPlaceRoot(__instance);
-                if (placeList == null)
-                {
-                    LogWarning("InitCatchPlace_PostPatch: _catchPlaceList is null.");
-                    return;
-                }
-
-                CacheLabelFont(__instance);
-
-                if (rootRT == null)
-                {
-                    LogWarning("InitCatchPlace_PostPatch: catchPlaceRoot is null. Will try PlaceView fallback.");
-                }
-
-                int placeCount = placeList.Length;
-                int labelCount = 0;
-                int nullInfoCount = 0;
-                int nullParentCount = 0;
-                LogVerbose(ref _catchPatchHitCount, "InitCatchPlace_PostPatch: placeList=" + placeList.Length + ", rootChildCount=" + (rootRT == null ? -1 : rootRT.childCount) + ", placeCount=" + placeCount);
-                for (int i = 0; i < placeCount; i++)
-                {
-                    ViewCatchCricket.CricketPlaceInfo info = placeList[i];
-                    if (info == null)
-                    {
-                        nullInfoCount++;
-                        continue;
-                    }
-
-                    ValueTuple<short, short> cricketId = new ValueTuple<short, short>(info.CricketColorId, info.CricketPartsId);
-                    string cricketName = cricketId.CalcCricketName();
-                    int cricketLevel = cricketId.CalcCricketGrade();
-                    string nameWithColor = Extentions.SetGradeColor(cricketName, cricketLevel);
-
-                    Transform parent = GetCatchPlaceTransform(info, rootRT, i);
-                    if (parent != null)
-                    {
-                        SetCricketLabel(parent, nameWithColor);
-                        labelCount++;
-                        if (i < 3)
-                        {
-                            LogVerbose(ref _catchPatchHitCount, "InitCatchPlace_PostPatch sample[" + i + "]: color=" + info.CricketColorId + ", part=" + info.CricketPartsId + ", level=" + cricketLevel + ", name=" + cricketName + ", parent=" + GetTransformPath(parent));
-                        }
-                    }
-                    else
-                    {
-                        nullParentCount++;
-                    }
-                }
-
-                Log("InitCatchPlace_PostPatch done. labels=" + labelCount + ", nullInfo=" + nullInfoCount + ", nullParent=" + nullParentCount);
+                RefreshCatchCricketLabels(__instance);
             }
             catch (Exception ex)
             {
                 LogException("InitCatchPlace_PostPatch exception", ex);
             }
+        }
+
+        private static bool IsCatchCricketRevealEnabled()
+        {
+            return EnableFlag && EnableCatchCricketFlag;
+        }
+
+        private static void RefreshCatchCricketLabels(ViewCatchCricket view)
+        {
+            if (view == null)
+            {
+                return;
+            }
+
+            ViewCatchCricket.CricketPlaceInfo[] placeList = GetCatchPlaceList(view);
+            RectTransform rootRT = GetCatchPlaceRoot(view);
+            if (placeList == null)
+            {
+                LogWarning("InitCatchPlace_PostPatch: _catchPlaceList is null.");
+                return;
+            }
+
+            CacheLabelFont(view);
+
+            if (rootRT == null)
+            {
+                LogWarning("InitCatchPlace_PostPatch: catchPlaceRoot is null. Will try PlaceView fallback.");
+            }
+
+            int placeCount = placeList.Length;
+            int labelCount = 0;
+            int nullInfoCount = 0;
+            int nullParentCount = 0;
+            LogVerbose(ref _catchPatchHitCount, "InitCatchPlace_PostPatch: placeList=" + placeList.Length + ", rootChildCount=" + (rootRT == null ? -1 : rootRT.childCount) + ", placeCount=" + placeCount);
+            for (int i = 0; i < placeCount; i++)
+            {
+                ViewCatchCricket.CricketPlaceInfo info = placeList[i];
+                if (info == null)
+                {
+                    nullInfoCount++;
+                    continue;
+                }
+
+                ValueTuple<short, short> cricketId = new ValueTuple<short, short>(info.CricketColorId, info.CricketPartsId);
+                string cricketName = cricketId.CalcCricketName();
+                int cricketLevel = cricketId.CalcCricketGrade();
+                string nameWithColor = Extentions.SetGradeColor(cricketName, cricketLevel);
+
+                Transform parent = GetCatchPlaceTransform(info, rootRT, i);
+                if (parent != null)
+                {
+                    SetCricketLabel(parent, nameWithColor);
+                    labelCount++;
+                    if (i < 3)
+                    {
+                        LogVerbose(ref _catchPatchHitCount, "InitCatchPlace_PostPatch sample[" + i + "]: color=" + info.CricketColorId + ", part=" + info.CricketPartsId + ", level=" + cricketLevel + ", name=" + cricketName + ", parent=" + GetTransformPath(parent));
+                    }
+                }
+                else
+                {
+                    nullParentCount++;
+                }
+            }
+
+            Log("InitCatchPlace_PostPatch done. labels=" + labelCount + ", nullInfo=" + nullInfoCount + ", nullParent=" + nullParentCount);
         }
 
         // 清理最近一次抓蛐蛐界面里由本 MOD 创建的透视标签。
