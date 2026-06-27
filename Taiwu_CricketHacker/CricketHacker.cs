@@ -22,14 +22,16 @@ namespace Taiwu_CricketHacker
         // 直接挂补丁的游戏类/方法：
         // - Game.Views.Cricket.ViewCatchCricket.InitCatchPlace：抓蛐蛐地点初始化后显示蛐蛐名称。
         // - Game.Views.Cricket.ViewCatchCricket.OnClickCatchPlace(int)：点击捕捉点前执行强制捕捉逻辑。
+        // - Game.Views.Cricket.ViewCatchCricket.FinishCatch、OnDisable：捕捉结束或界面关闭时立即清理名称。
         // - Game.Views.Cricket.Combat.CricketJar.SetVisible(bool)：蛐蛐对战时强制显示对手罐中蛐蛐。
         // - Game.Views.Cricket.CricketBettingRewardItemView.SetData(int, CricketWagerData, Action<int>)：赌约奖励三选一刷新后显示隐藏蛐蛐。
         // 只读写但不单独挂补丁的游戏界面类/组件：CardItem、CricketViewNew、TooltipInvoker、CImage、TextMeshProUGUI。
         // 最早代码版本挂的是旧类 UI_CatchCricket；正式版已改为 ViewCatchCricket，蛐蛐名称/品级也改用 GameDataExtensions 的正式版扩展方法。
         private const string CatchPlaceListFieldName = "_catchPlaceList";
         private const string CatchPlaceRootFieldName = "catchPlaceRoot";
+        private const string CricketLabelOverlayName = "CricketHackerLabelOverlay";
         private const string CricketLabelName = "cricketShowName";
-        private const int CricketLabelFontSize = 25;
+        private const int CricketLabelFontSize = 28;
         private const short ForceCatchSingLevel = 1000;
         private static readonly Vector3 CricketLabelLocalPosition = new Vector3(100f, -100f, 0f);
         private static readonly Vector2 CricketLabelSize = new Vector2(260f, 80f);
@@ -89,6 +91,14 @@ namespace Taiwu_CricketHacker
             PatchPrefix(
                 AccessTools.Method(typeof(ViewCatchCricket), "OnClickCatchPlace", new Type[] { typeof(int) }),
                 nameof(OnClickCatchPlace_PrePatch));
+
+            PatchPrefix(
+                AccessTools.Method(typeof(ViewCatchCricket), "FinishCatch"),
+                nameof(FinishCatch_PrePatch));
+
+            PatchPrefix(
+                AccessTools.Method(typeof(ViewCatchCricket), "OnDisable"),
+                nameof(CatchCricketOnDisable_PrePatch));
         }
 
         // 注册蛐蛐对战罐子显示状态的补丁，用于强制显示对手蛐蛐。
@@ -210,6 +220,12 @@ namespace Taiwu_CricketHacker
             }
 
             CacheLabelFont(view);
+            RectTransform labelOverlay = GetOrCreateLabelOverlay(view);
+            if (labelOverlay == null)
+            {
+                LogWarning("InitCatchPlace_PostPatch: label overlay creation failed.");
+                return;
+            }
 
             if (rootRT == null)
             {
@@ -238,7 +254,9 @@ namespace Taiwu_CricketHacker
                 Transform parent = GetCatchPlaceTransform(info, rootRT, i);
                 if (parent != null)
                 {
-                    SetCricketLabel(parent, nameWithColor);
+                    // 清理上一版直接挂在捕捉点下的独立 Canvas 标签。
+                    RemoveCricketLabel(parent);
+                    SetCricketLabel(labelOverlay, parent, i, nameWithColor);
                     labelCount++;
                     if (i < 3)
                     {
@@ -251,6 +269,7 @@ namespace Taiwu_CricketHacker
                 }
             }
 
+            labelOverlay.SetAsLastSibling();
             Log("InitCatchPlace_PostPatch done. labels=" + labelCount + ", nullInfo=" + nullInfoCount + ", nullParent=" + nullParentCount);
         }
 
@@ -268,6 +287,9 @@ namespace Taiwu_CricketHacker
                 return;
             }
 
+            RemoveCricketLabelOverlay(view);
+
+            // 兼容清理旧版直接挂在捕捉点下的标签。
             ViewCatchCricket.CricketPlaceInfo[] placeList = GetCatchPlaceList(view);
             RectTransform rootRT = GetCatchPlaceRoot(view);
             if (placeList != null)
@@ -433,16 +455,44 @@ namespace Taiwu_CricketHacker
             return null;
         }
 
-        // 在指定捕捉点节点下创建或更新蛐蛐名称标签。
-        private static void SetCricketLabel(Transform parent, string textValue)
+        // 在游戏原生 Canvas 内创建最后绘制的普通文字层，避免新增 Canvas 不参与该界面渲染。
+        private static RectTransform GetOrCreateLabelOverlay(ViewCatchCricket view)
         {
-            Transform textTrans = parent.Find(CricketLabelName);
+            if (view == null)
+            {
+                return null;
+            }
+
+            Transform overlayTrans = view.transform.Find(CricketLabelOverlayName);
+            RectTransform overlay = overlayTrans as RectTransform;
+            if (overlay == null)
+            {
+                GameObject overlayObj = new GameObject(CricketLabelOverlayName, typeof(RectTransform));
+                overlayObj.transform.SetParent(view.transform, false);
+                overlay = overlayObj.GetComponent<RectTransform>();
+            }
+
+            overlay.anchorMin = Vector2.zero;
+            overlay.anchorMax = Vector2.one;
+            overlay.offsetMin = Vector2.zero;
+            overlay.offsetMax = Vector2.zero;
+            overlay.localPosition = Vector3.zero;
+            overlay.localScale = Vector3.one;
+            overlay.gameObject.SetActive(true);
+            overlay.SetAsLastSibling();
+            return overlay;
+        }
+
+        // 在普通覆盖层中创建文字，使所有名称在雾气之后由游戏原生 Canvas 统一绘制。
+        private static void SetCricketLabel(RectTransform overlay, Transform placeTransform, int index, string textValue)
+        {
+            string labelName = CricketLabelName + "_" + index;
+            Transform textTrans = overlay.Find(labelName);
             TextMeshProUGUI text;
             if (textTrans == null)
             {
-                GameObject textObj = new GameObject(CricketLabelName, typeof(RectTransform));
-                textObj.transform.SetParent(parent, false);
-                textObj.transform.localPosition = CricketLabelLocalPosition;
+                GameObject textObj = new GameObject(labelName, typeof(RectTransform));
+                textObj.transform.SetParent(overlay, false);
                 textObj.transform.localScale = Vector3.one;
 
                 RectTransform rect = textObj.GetComponent<RectTransform>();
@@ -464,9 +514,67 @@ namespace Taiwu_CricketHacker
                 }
             }
 
+            Vector3 worldPosition = placeTransform.TransformPoint(CricketLabelLocalPosition);
+            Vector3 overlayPosition = overlay.InverseTransformPoint(worldPosition);
+            RectTransform textRect = text.rectTransform;
+            textRect.localPosition = new Vector3(overlayPosition.x, overlayPosition.y, 0f);
+            textRect.localScale = Vector3.one;
+            textRect.sizeDelta = CricketLabelSize;
+
             ApplyLabelFont(text);
+            text.fontSize = CricketLabelFontSize;
+            text.fontStyle = FontStyles.Normal;
+            text.color = Color.white;
+            text.alpha = 1f;
             text.text = textValue;
             text.transform.SetAsLastSibling();
+
+            if (index < 3)
+            {
+                Canvas renderedCanvas = text.canvas;
+                Log("Catch label[" + index + "] render state: active=" + text.gameObject.activeInHierarchy
+                    + ", textEnabled=" + text.enabled
+                    + ", renderedCanvas=" + (renderedCanvas == null ? "<null>" : GetTransformPath(renderedCanvas.transform))
+                    + ", canvasOrder=" + (renderedCanvas == null ? -1 : renderedCanvas.sortingOrder)
+                    + ", canvasLayer=" + (renderedCanvas == null ? "<null>" : renderedCanvas.sortingLayerName)
+                    + ", font=" + (text.font == null ? "<null>" : text.font.name)
+                    + ", overlaySize=" + overlay.rect.size
+                    + ", localPos=" + textRect.localPosition
+                    + ", worldPos=" + textRect.position
+                    + ", size=" + textRect.rect.size
+                    + ", text=" + textValue);
+            }
+        }
+
+        // 捕捉流程结束时立即隐藏并清理透视文字，避免其残留在抓取动画上。
+        public static void FinishCatch_PrePatch(ViewCatchCricket __instance)
+        {
+            Log("FinishCatch_PrePatch: removing catch cricket labels.");
+            RemoveCricketLabelOverlay(__instance);
+        }
+
+        // 抓蛐蛐界面被直接关闭时兜底清理透视文字。
+        public static void CatchCricketOnDisable_PrePatch(ViewCatchCricket __instance)
+        {
+            Log("CatchCricketOnDisable_PrePatch: removing catch cricket labels.");
+            RemoveCricketLabelOverlay(__instance);
+        }
+
+        // 清理上一版或当前版本创建的全局文字覆盖层。
+        private static void RemoveCricketLabelOverlay(ViewCatchCricket view)
+        {
+            if (view == null)
+            {
+                return;
+            }
+
+            Transform overlayTrans = view.transform.Find(CricketLabelOverlayName);
+            if (overlayTrans != null)
+            {
+                // Destroy 会延迟到帧末，先禁用可保证文字在当前帧立即消失。
+                overlayTrans.gameObject.SetActive(false);
+                GameObject.Destroy(overlayTrans.gameObject);
+            }
         }
 
         // 从游戏现有文本控件中缓存 TMP 字体，供新创建的透视标签复用。
