@@ -29,10 +29,14 @@ namespace Taiwu_CricketHacker
         private const string CatchPlaceListFieldName = "_catchPlaceList";
         private const string CatchPlaceRootFieldName = "catchPlaceRoot";
         private const string CricketLabelName = "cricketShowName";
-        private const int CricketLabelFontSize = 25;
+        private const string CricketLabelShadowName = "cricketShowNameShadow";
+        private const int CricketLabelFontSize = 28;
+        private const float CricketLabelMinColorValue = 0.92f;
         private const short ForceCatchSingLevel = 1000;
+        private static readonly Color32 CricketLabelShadowColor = new Color32(0, 0, 0, 150);
         private static readonly Vector3 CricketLabelLocalPosition = new Vector3(100f, -100f, 0f);
         private static readonly Vector2 CricketLabelSize = new Vector2(260f, 80f);
+        private static readonly Vector2 CricketLabelShadowDistance = new Vector2(1.4f, -1.4f);
         private const bool DebugLogging = false;
         private const int MaxVerboseLogCount = 20;
 
@@ -233,12 +237,12 @@ namespace Taiwu_CricketHacker
                 ValueTuple<short, short> cricketId = new ValueTuple<short, short>(info.CricketColorId, info.CricketPartsId);
                 string cricketName = cricketId.CalcCricketName();
                 int cricketLevel = cricketId.CalcCricketGrade();
-                string nameWithColor = Extentions.SetGradeColor(cricketName, cricketLevel);
+                string labelText = GetCatchCricketLabelText(cricketName, cricketLevel);
 
                 Transform parent = GetCatchPlaceTransform(info, rootRT, i);
                 if (parent != null)
                 {
-                    SetCricketLabel(parent, nameWithColor);
+                    SetCricketLabel(parent, labelText);
                     labelCount++;
                     if (i < 3)
                     {
@@ -252,6 +256,61 @@ namespace Taiwu_CricketHacker
             }
 
             Log("InitCatchPlace_PostPatch done. labels=" + labelCount + ", nullInfo=" + nullInfoCount + ", nullParent=" + nullParentCount);
+        }
+
+        // 生成透视标签文本：保留品级颜色，并把颜色亮度略微提高，避免在捕捉界面上太淡。
+        private static string GetCatchCricketLabelText(string cricketName, int cricketLevel)
+        {
+            string gradeColoredText = Extentions.SetGradeColor(cricketName, cricketLevel);
+            return BrightenFirstColorTag(gradeColoredText);
+        }
+
+        // 只调整第一个 <color=#...> 标签的颜色亮度，不改变品级颜色的色相。
+        private static string BrightenFirstColorTag(string text)
+        {
+            const string colorTagPrefix = "<color=#";
+
+            if (string.IsNullOrEmpty(text))
+            {
+                return text;
+            }
+
+            int colorStart = text.IndexOf(colorTagPrefix, StringComparison.OrdinalIgnoreCase);
+            if (colorStart < 0)
+            {
+                return text;
+            }
+
+            colorStart += colorTagPrefix.Length;
+            int colorEnd = text.IndexOf('>', colorStart);
+            if (colorEnd <= colorStart)
+            {
+                return text;
+            }
+
+            string colorHex = text.Substring(colorStart, colorEnd - colorStart);
+            Color color;
+            if (!ColorUtility.TryParseHtmlString("#" + colorHex, out color))
+            {
+                return text;
+            }
+
+            color = BrightenColorValue(color);
+            string brightColorHex = ColorUtility.ToHtmlStringRGBA(color);
+            return text.Substring(0, colorStart) + brightColorHex + text.Substring(colorEnd);
+        }
+
+        // 用 HSV 的 Value 通道提亮颜色，避免直接加白导致品级颜色难以区分。
+        private static Color BrightenColorValue(Color color)
+        {
+            float h;
+            float s;
+            float v;
+            Color.RGBToHSV(color, out h, out s, out v);
+            v = Mathf.Max(v, CricketLabelMinColorValue);
+            Color brightColor = Color.HSVToRGB(h, s, v);
+            brightColor.a = 1f;
+            return brightColor;
         }
 
         // 清理最近一次抓蛐蛐界面里由本 MOD 创建的透视标签。
@@ -465,7 +524,9 @@ namespace Taiwu_CricketHacker
             }
 
             ApplyLabelFont(text);
+            ApplyLabelVisibilityStyle(text);
             text.text = textValue;
+            SetCricketLabelShadow(parent, text, textValue);
             text.transform.SetAsLastSibling();
         }
 
@@ -536,6 +597,75 @@ namespace Taiwu_CricketHacker
             }
         }
 
+        // 保证 TMP 主文本本身不额外压暗富文本颜色。
+        private static void ApplyLabelVisibilityStyle(TextMeshProUGUI text)
+        {
+            if (text == null)
+            {
+                return;
+            }
+
+            text.alpha = 1f;
+            text.color = Color.white;
+        }
+
+        // 用一个独立的 TMP 文本做阴影，比 Unity UI Shadow 组件在 TMP 上更稳定。
+        private static void SetCricketLabelShadow(Transform parent, TextMeshProUGUI sourceText, string textValue)
+        {
+            if (parent == null || sourceText == null)
+            {
+                return;
+            }
+
+            Transform shadowTrans = parent.Find(CricketLabelShadowName);
+            TextMeshProUGUI shadowText;
+            if (shadowTrans == null)
+            {
+                GameObject shadowObj = new GameObject(CricketLabelShadowName, typeof(RectTransform));
+                shadowObj.transform.SetParent(parent, false);
+                shadowText = shadowObj.AddComponent<TextMeshProUGUI>();
+            }
+            else
+            {
+                shadowText = shadowTrans.GetComponent<TextMeshProUGUI>();
+                if (shadowText == null)
+                {
+                    shadowText = shadowTrans.gameObject.AddComponent<TextMeshProUGUI>();
+                }
+            }
+
+            shadowText.transform.localPosition = CricketLabelLocalPosition + new Vector3(CricketLabelShadowDistance.x, CricketLabelShadowDistance.y, 0f);
+            shadowText.transform.localScale = Vector3.one;
+
+            RectTransform shadowRect = shadowText.GetComponent<RectTransform>();
+            shadowRect.sizeDelta = CricketLabelSize;
+
+            ApplyLabelFont(shadowText);
+            shadowText.text = Extentions.RemoveColorTags(textValue);
+            shadowText.fontSize = sourceText.fontSize;
+            shadowText.raycastTarget = false;
+            shadowText.alignment = sourceText.alignment;
+            shadowText.enableWordWrapping = sourceText.enableWordWrapping;
+            shadowText.overflowMode = sourceText.overflowMode;
+            shadowText.color = CricketLabelShadowColor;
+            shadowText.alpha = 1f;
+            shadowText.transform.SetAsLastSibling();
+        }
+
+        private static void RemoveCricketLabel(Transform parent, string labelName)
+        {
+            if (parent == null)
+            {
+                return;
+            }
+
+            Transform textTrans = parent.Find(labelName);
+            if (textTrans != null)
+            {
+                GameObject.Destroy(textTrans.gameObject);
+            }
+        }
+
         // 删除指定捕捉点节点下由本 MOD 创建的蛐蛐名称标签。
         private static void RemoveCricketLabel(Transform parent)
         {
@@ -544,11 +674,8 @@ namespace Taiwu_CricketHacker
                 return;
             }
 
-            Transform textTrans = parent.Find(CricketLabelName);
-            if (textTrans != null)
-            {
-                GameObject.Destroy(textTrans.gameObject);
-            }
+            RemoveCricketLabel(parent, CricketLabelName);
+            RemoveCricketLabel(parent, CricketLabelShadowName);
         }
 
         // 显示赌约奖励中的单个蛐蛐卡片，并恢复图像、空白图层和 Tooltip 数据。
